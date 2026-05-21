@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   Gauge,
   Clock3,
@@ -30,16 +30,23 @@ function money(value) {
   });
 }
 
-function calculateTotals(entries, rates, goal, daysLeft, physicalClocked) {
+function calculateTotals(entries, rates, goal, daysLeft, physicalClocked, extraHours) {
   const flagged = entries.reduce((sum, entry) => sum + toNum(entry.flagged), 0);
   const actual = entries.reduce((sum, entry) => sum + toNum(entry.actual), 0);
   const clocked = toNum(physicalClocked);
+  const sickHours = toNum(extraHours.sick);
+  const ptoHours = toNum(extraHours.pto);
+  const trainingHours = toNum(extraHours.training);
+  const otherHours = toNum(extraHours.other);
+  const extraPaidHours = sickHours + ptoHours + trainingHours + otherHours;
 
   const regularRate = toNum(rates.regular);
   const flatRate = toNum(rates.flat);
   const breakEvenRatio = flatRate > 0 ? regularRate / flatRate : 0;
 
-  const flatPay = flagged * flatRate;
+  const productionFlatPay = flagged * flatRate;
+  const extraPaidPay = extraPaidHours * flatRate;
+  const flatPay = productionFlatPay + extraPaidPay;
   const basePay = clocked * regularRate;
   const breakEvenFlagged = clocked * breakEvenRatio;
   const cushion = flagged - breakEvenFlagged;
@@ -56,6 +63,13 @@ function calculateTotals(entries, rates, goal, daysLeft, physicalClocked) {
     actual,
     clocked,
     flatPay,
+    productionFlatPay,
+    extraPaidPay,
+    extraPaidHours,
+    sickHours,
+    ptoHours,
+    trainingHours,
+    otherHours,
     basePay,
     breakEvenRatio,
     breakEvenFlagged,
@@ -119,18 +133,49 @@ function todayIsoDate() {
 }
 
 export default function HoursTracker() {
-  const [entries, setEntries] = useState(initialEntries);
-  const [rates, setRates] = useState(DEFAULT_PAY);
-  const [profile, setProfile] = useState({
-    technician: "",
-    dealership: "",
-    role: "",
+  const [entries, setEntries] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem("hoursTracker.entries")) || initialEntries;
+    } catch {
+      return initialEntries;
+    }
+  });
+  const [rates, setRates] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem("hoursTracker.rates")) || DEFAULT_PAY;
+    } catch {
+      return DEFAULT_PAY;
+    }
+  });
+  const [profile, setProfile] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem("hoursTracker.profile")) || {
+        technician: "",
+        dealership: "",
+        role: "",
+      };
+    } catch {
+      return {
+        technician: "",
+        dealership: "",
+        role: "",
+      };
+    }
   });
   const [showProfileSettings, setShowProfileSettings] = useState(true);
   const [showTests, setShowTests] = useState(false);
-  const [period, setPeriod] = useState({
-    start: todayIsoDate(),
-    end: todayIsoDate(),
+  const [period, setPeriod] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem("hoursTracker.period")) || {
+        start: todayIsoDate(),
+        end: todayIsoDate(),
+      };
+    } catch {
+      return {
+        start: todayIsoDate(),
+        end: todayIsoDate(),
+      };
+    }
   });
   const [form, setForm] = useState({
     date: todayIsoDate(),
@@ -140,16 +185,57 @@ export default function HoursTracker() {
     description: "",
   });
 
-  const [physicalClocked, setPhysicalClocked] = useState("");
+  const [physicalClocked, setPhysicalClocked] = useState(() => localStorage.getItem("hoursTracker.physicalClocked") || "");
+  const [extraHours, setExtraHours] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem("hoursTracker.extraHours")) || {
+        sick: "",
+        pto: "",
+        training: "",
+        other: "",
+      };
+    } catch {
+      return {
+        sick: "",
+        pto: "",
+        training: "",
+        other: "",
+      };
+    }
+  });
   const [goal, setGoal] = useState("");
   const [daysLeft, setDaysLeft] = useState("");
 
   const totals = useMemo(
-    () => calculateTotals(entries, rates, goal, daysLeft, physicalClocked),
-    [entries, rates, goal, daysLeft, physicalClocked]
+    () => calculateTotals(entries, rates, goal, daysLeft, physicalClocked, extraHours),
+    [entries, rates, goal, daysLeft, physicalClocked, extraHours]
   );
 
   const status = statusForEfficiency(totals.efficiencyClock);
+
+  useEffect(() => {
+    localStorage.setItem("hoursTracker.entries", JSON.stringify(entries));
+  }, [entries]);
+
+  useEffect(() => {
+    localStorage.setItem("hoursTracker.rates", JSON.stringify(rates));
+  }, [rates]);
+
+  useEffect(() => {
+    localStorage.setItem("hoursTracker.profile", JSON.stringify(profile));
+  }, [profile]);
+
+  useEffect(() => {
+    localStorage.setItem("hoursTracker.period", JSON.stringify(period));
+  }, [period]);
+
+  useEffect(() => {
+    localStorage.setItem("hoursTracker.physicalClocked", physicalClocked);
+  }, [physicalClocked]);
+
+  useEffect(() => {
+    localStorage.setItem("hoursTracker.extraHours", JSON.stringify(extraHours));
+  }, [extraHours]);
 
   function addEntry() {
     setEntries((prev) => [
@@ -180,6 +266,64 @@ export default function HoursTracker() {
 
   function clearAllEntries() {
     setEntries([]);
+  }
+
+  function exportPdf() {
+    window.print();
+  }
+
+  function exportBackupJson() {
+    const backup = {
+      app: "Hours Tracker",
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      profile,
+      period,
+      rates,
+      physicalClocked,
+      extraHours,
+      entries,
+      goal,
+      daysLeft,
+    };
+
+    const blob = new Blob([JSON.stringify(backup, null, 2)], {
+      type: "application/json;charset=utf-8",
+    });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `hours-tracker-backup-${todayIsoDate()}.json`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  function importBackupJson(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const backup = JSON.parse(String(reader.result || "{}"));
+
+        if (backup.profile) setProfile(backup.profile);
+        if (backup.period) setPeriod(backup.period);
+        if (backup.rates) setRates(backup.rates);
+        if (typeof backup.physicalClocked !== "undefined") setPhysicalClocked(String(backup.physicalClocked ?? ""));
+        if (backup.extraHours) setExtraHours(backup.extraHours);
+        if (Array.isArray(backup.entries)) setEntries(backup.entries);
+        if (typeof backup.goal !== "undefined") setGoal(String(backup.goal ?? ""));
+        if (typeof backup.daysLeft !== "undefined") setDaysLeft(String(backup.daysLeft ?? ""));
+      } catch {
+        alert("Could not import backup. Please make sure this is a valid Hours Tracker JSON file.");
+      } finally {
+        event.target.value = "";
+      }
+    };
+    reader.readAsText(file);
   }
 
   function exportCsv() {
@@ -223,9 +367,20 @@ export default function HoursTracker() {
 
         <PerformanceOverview totals={totals} goal={goal} />
 
+        <TechnicianInsights
+          totals={totals}
+          rates={rates}
+          goal={goal}
+          daysLeft={daysLeft}
+        />
+
         <PhysicalClockSection
           physicalClocked={physicalClocked}
           setPhysicalClocked={setPhysicalClocked}
+          extraHours={extraHours}
+          setExtraHours={setExtraHours}
+          totals={totals}
+          rates={rates}
         />
 
         <ProfileSettings
@@ -244,6 +399,9 @@ export default function HoursTracker() {
           setForm={setForm}
           addEntry={addEntry}
           exportCsv={exportCsv}
+          exportPdf={exportPdf}
+          exportBackupJson={exportBackupJson}
+          importBackupJson={importBackupJson}
           clearAllEntries={clearAllEntries}
         />
 
@@ -315,7 +473,7 @@ function KpiGrid({ totals, rates }) {
         value={`${Number.isFinite(totals.efficiencyActual) ? totals.efficiencyActual.toFixed(1) : "0.0"}%`}
         sub="Sold ÷ actual"
       />
-      <Metric icon={DollarSign} accent="green" title="Flat pay" value={money(totals.flatPay)} sub={`$${toNum(rates.flat)}/hr × flagged`} />
+      <Metric icon={DollarSign} accent="green" title="Flat pay" value={money(totals.flatPay)} sub={`Production + other paid hrs @ $${toNum(rates.flat)}/hr`} />
       <Metric icon={DollarSign} accent="yellow" title="Base pay" value={money(totals.basePay)} sub={`$${toNum(rates.regular)}/hr × clocked`} />
       <Metric
         title="Break-even cushion"
@@ -327,21 +485,56 @@ function KpiGrid({ totals, rates }) {
   );
 }
 
-function PhysicalClockSection({ physicalClocked, setPhysicalClocked }) {
+function PhysicalClockSection({ physicalClocked, setPhysicalClocked, extraHours, setExtraHours, totals, rates }) {
   return (
     <section className="rounded-2xl border border-zinc-800 bg-zinc-900/70 p-4 shadow-xl md:p-6">
-      <h2 className="mb-4 text-lg font-semibold">Physical Clock Time</h2>
+      <h2 className="mb-4 text-lg font-semibold">Physical Clock Time & Other Paid Hours</h2>
 
-      <div className="grid gap-3 md:grid-cols-3">
+      <div className="grid gap-3 md:grid-cols-5">
         <Field
           label="Physically clocked hours"
           value={physicalClocked}
           onChange={setPhysicalClocked}
         />
+        <Field
+          label="Sick time off"
+          value={extraHours.sick}
+          onChange={(value) => setExtraHours({ ...extraHours, sick: value })}
+        />
+        <Field
+          label="Paid time off"
+          value={extraHours.pto}
+          onChange={(value) => setExtraHours({ ...extraHours, pto: value })}
+        />
+        <Field
+          label="Training hours"
+          value={extraHours.training}
+          onChange={(value) => setExtraHours({ ...extraHours, training: value })}
+        />
+        <Field
+          label="Other paid hours"
+          value={extraHours.other}
+          onChange={(value) => setExtraHours({ ...extraHours, other: value })}
+        />
+      </div>
+
+      <div className="mt-4 grid gap-3 md:grid-cols-3">
+        <div className="rounded-xl border border-zinc-800 bg-zinc-950 p-3">
+          <div className="text-xs text-zinc-500">Other paid hours total</div>
+          <div className="mt-1 text-xl font-bold">{totals.extraPaidHours.toFixed(2)} hrs</div>
+        </div>
+        <div className="rounded-xl border border-zinc-800 bg-zinc-950 p-3">
+          <div className="text-xs text-zinc-500">Rate used</div>
+          <div className="mt-1 text-xl font-bold">${toNum(rates.flat).toFixed(2)}/hr</div>
+        </div>
+        <div className="rounded-xl border border-zinc-800 bg-zinc-950 p-3">
+          <div className="text-xs text-zinc-500">Other paid amount</div>
+          <div className="mt-1 text-xl font-bold">{money(totals.extraPaidPay)}</div>
+        </div>
       </div>
 
       <p className="mt-3 text-sm text-zinc-400">
-        Enter your physical worked hours separately from RO entries.
+        Enter your physical worked hours separately from RO entries. Sick time, PTO, training, and other paid hours are calculated using the flat rate entered in settings.
       </p>
     </section>
   );
@@ -424,7 +617,7 @@ function ProfileSettings({
   );
 }
 
-function AddEntry({ form, setForm, addEntry, exportCsv, clearAllEntries }) {
+function AddEntry({ form, setForm, addEntry, exportCsv, exportPdf, exportBackupJson, importBackupJson, clearAllEntries }) {
   return (
     <section className="rounded-2xl border border-zinc-800 bg-zinc-900/70 p-4 shadow-xl md:p-6">
       <h2 className="mb-4 text-lg font-semibold">Add entry</h2>
@@ -439,7 +632,7 @@ function AddEntry({ form, setForm, addEntry, exportCsv, clearAllEntries }) {
         <label className="space-y-1">
           <span className="block text-sm text-zinc-400">Type</span>
           <select
-            className="h-10 w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 text-zinc-100 outline-none focus:border-zinc-400"
+            className="h-10 w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 text-zinc-100 outline-none focus:border-zinc-400 [color-scheme:dark]"
             value={form.type}
             onChange={(event) => setForm({ ...form, type: event.target.value })}
           >
@@ -465,7 +658,7 @@ function AddEntry({ form, setForm, addEntry, exportCsv, clearAllEntries }) {
         <label className="space-y-1 md:col-span-6">
           <span className="block text-sm text-zinc-400">Description / RO</span>
           <input
-            className="h-10 w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 text-zinc-100 outline-none focus:border-zinc-400"
+            className="h-10 w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 text-zinc-100 outline-none focus:border-zinc-400 [color-scheme:dark]"
             placeholder="RO 251497 — diag, MPI, LOF ROT, notes..."
             value={form.description}
             onChange={(event) => setForm({ ...form, description: event.target.value })}
@@ -486,6 +679,27 @@ function AddEntry({ form, setForm, addEntry, exportCsv, clearAllEntries }) {
         >
           Export CSV
         </button>
+        <button
+          onClick={exportPdf}
+          className="rounded-xl bg-zinc-800 px-4 py-2 font-semibold text-zinc-100 hover:bg-zinc-700"
+        >
+          Save / Print PDF
+        </button>
+        <button
+          onClick={exportBackupJson}
+          className="rounded-xl bg-zinc-800 px-4 py-2 font-semibold text-zinc-100 hover:bg-zinc-700"
+        >
+          Export Backup
+        </button>
+        <label className="cursor-pointer rounded-xl bg-zinc-800 px-4 py-2 font-semibold text-zinc-100 hover:bg-zinc-700">
+          Import Backup
+          <input
+            type="file"
+            accept="application/json,.json"
+            className="hidden"
+            onChange={importBackupJson}
+          />
+        </label>
         <button
           onClick={clearAllEntries}
           className="rounded-xl bg-zinc-800 px-4 py-2 font-semibold text-zinc-100 hover:bg-zinc-700"
@@ -699,6 +913,117 @@ function TestPanel({ showTests, setShowTests, rates, totals, goal, daysLeft }) {
   );
 }
 
+function TechnicianInsights({ totals, rates, goal, daysLeft }) {
+  const flatRate = toNum(rates.flat);
+  const regularRate = toNum(rates.regular);
+  const payDifference = totals.flatPay - totals.basePay;
+  const target = toNum(goal);
+  const remainingDays = toNum(daysLeft);
+  const projectedFinish = remainingDays > 0 ? totals.flagged + totals.avgFlaggedDay * remainingDays : totals.flagged;
+  const neededForGoal = target > 0 && remainingDays > 0 ? totals.neededPerDay : 0;
+
+  const efficiencyLabel = !Number.isFinite(totals.efficiencyClock)
+    ? "No clock data yet"
+    : totals.efficiencyClock >= 130
+      ? "Elite"
+      : totals.efficiencyClock >= 115
+        ? "Very strong"
+        : totals.efficiencyClock >= 100
+          ? "Strong"
+          : totals.efficiencyClock >= 75
+            ? "Safe"
+            : "Below break-even";
+
+  const insightCards = [
+    {
+      title: "Pay position",
+      value: payDifference >= 0 ? `+${money(payDifference)}` : `-${money(Math.abs(payDifference))}`,
+      detail: payDifference >= 0
+        ? "Flat/bonus pay is currently ahead of base pay."
+        : "Base pay is currently ahead of flat/bonus pay.",
+      tone: payDifference >= 0 ? "green" : "red",
+    },
+    {
+      title: "Break-even cushion",
+      value: `${totals.cushion >= 0 ? "+" : ""}${totals.cushion.toFixed(2)} hrs`,
+      detail: totals.cushion >= 0
+        ? "You have room before falling back to base-pay pace."
+        : "You need more flagged hours to beat base-pay pace.",
+      tone: totals.cushion >= 0 ? "green" : "yellow",
+    },
+    {
+      title: "Efficiency status",
+      value: efficiencyLabel,
+      detail: Number.isFinite(totals.efficiencyClock)
+        ? `${totals.efficiencyClock.toFixed(1)}% vs physically clocked time.`
+        : "Enter physically clocked hours to calculate this.",
+      tone: totals.efficiencyClock >= 115 ? "purple" : totals.efficiencyClock >= 75 ? "green" : "yellow",
+    },
+    {
+      title: "Projected finish",
+      value: `${projectedFinish.toFixed(2)} hrs`,
+      detail: remainingDays > 0
+        ? "Projection based on your current average flagged per entry/day."
+        : "Enter days left to improve this projection.",
+      tone: "blue",
+    },
+  ];
+
+  return (
+    <section className="rounded-2xl border border-zinc-800 bg-zinc-900/70 p-4 shadow-xl md:p-6">
+      <div className="mb-4 flex flex-col gap-1">
+        <h2 className="text-lg font-semibold">Technician Insights</h2>
+        <p className="text-sm text-zinc-400">Automatic interpretation of your pay-period numbers.</p>
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-4">
+        {insightCards.map((card) => (
+          <InsightCard key={card.title} {...card} />
+        ))}
+      </div>
+
+      <div className="mt-4 rounded-2xl border border-zinc-800 bg-zinc-950 p-4">
+        <h3 className="mb-3 font-semibold text-zinc-100">Quick read</h3>
+        <div className="space-y-2 text-sm text-zinc-300">
+          <p>
+            {flatRate > 0 && regularRate > 0
+              ? `Your break-even point is ${(totals.breakEvenRatio * 100).toFixed(1)}%, meaning you need ${totals.breakEvenFlagged.toFixed(2)} flagged hours for your current physically clocked time.`
+              : "Enter base and flat rates to calculate your true break-even point."}
+          </p>
+          <p>
+            {target > 0 && remainingDays > 0
+              ? `To reach ${target.toFixed(2)} flagged hours, you need ${neededForGoal.toFixed(2)} flagged hours per remaining day.`
+              : "Enter a goal and days left to unlock target pacing guidance."}
+          </p>
+          <p>
+            {totals.efficiencyActual > 0
+              ? `Your RO efficiency is ${totals.efficiencyActual.toFixed(1)}%, which shows how your sold time compares to actual RO time.`
+              : "Enter actual RO hours to compare sold time against actual job time."}
+          </p>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function InsightCard({ title, value, detail, tone }) {
+  const toneMap = {
+    green: "border-green-500/20 bg-green-500/10",
+    red: "border-red-500/20 bg-red-500/10",
+    yellow: "border-yellow-500/20 bg-yellow-500/10",
+    purple: "border-purple-500/20 bg-purple-500/10",
+    blue: "border-blue-500/20 bg-blue-500/10",
+  };
+
+  return (
+    <div className={`rounded-2xl border p-4 ${toneMap[tone] || toneMap.blue}`}>
+      <div className="text-sm text-zinc-400">{title}</div>
+      <div className="mt-1 text-2xl font-black">{value}</div>
+      <div className="mt-2 text-xs text-zinc-400">{detail}</div>
+    </div>
+  );
+}
+
 function PerformanceOverview({ totals, goal }) {
   const goalValue = toNum(goal);
   const goalPercent = goalValue > 0 ? Math.min((totals.flagged / goalValue) * 100, 100) : 0;
@@ -804,7 +1129,7 @@ function Field({ label, value, onChange, type = "text" }) {
       <input
         type={type}
         inputMode={type === "date" ? undefined : isNumericField ? "decimal" : "text"}
-        className="h-10 w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 text-zinc-100 outline-none focus:border-zinc-400"
+        className="h-10 w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 text-zinc-100 outline-none focus:border-zinc-400 [color-scheme:dark]"
         placeholder={
           type === "date"
             ? undefined
